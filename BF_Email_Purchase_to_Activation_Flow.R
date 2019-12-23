@@ -52,30 +52,19 @@ ship_data <- dbGetQuery(msconn_rsql,q1) %>%
 
 #Connecting Email data to Shipment data
 email_ship_data <- left_join(email_data, ship_data, by = c('order_number', 'email_address')) %>%
-  mutate(Serial_Number = tolower(Serial_Number)) %>%
+  mutate(Serial_Number = toupper(Serial_Number)) %>%
   select(order_date.x, category, order_number, email_address, quantity_sold, SKU.x, Actual_Post_Goods_Issue_Date, Serial_Number, Product_Family, Product_Category, Product_Name_Full) %>%
   `colnames<-` (c('order_date', 'category', 'order_number', 'email_address', 'quantity_sold', 'sku', 'shipment_date', 'mac_id', 'product_family', 'product_category', 'product_name_full'))
 
 
-
-#Saving output
-save_loc = paste('C:/Users/kuijt/Documents/R/Email to Activation Flow/',paste(substr(Sys.Date(),3,4),substr(Sys.Date(),6,7),substr(Sys.Date(),9,10),sep=""),'_BF_Email_Shipment_Data.xlsx', sep="")
-write.xlsx(email_ship_data, save_loc, row.names = FALSE)
-
-#Automatically adjusting column widths
-wb <- loadWorkbook(save_loc)
-sheets <- getSheets(wb)
-autoSizeColumn(sheets[[1]], colIndex=1:ncol(email_ship_data))
-saveWorkbook(wb,save_loc)
-
-
-
+#Connect to Redshift
 source('C:/Users/kuijt/Documents/R/Connection/R_to_RS_Conn_v(prod).R')
 
-q2 = "SELECT      dd.id, dd.doorbot_web_doorbot_id, dd.activation_time, dhi.device_type, dhi.device_category, dhi.marketing_name, dd.mac_address, LOWER(md.mac_id) AS mac_id, LOWER(md.serial_number) AS serial_number, hdo.household_id, dwu.email, hdo.device_order, hdo.ownership_time, dds.location_id, dc.iso_code, dc.country
+#Query activation data
+q2 = paste("SELECT      dd.id, dd.doorbot_web_doorbot_id, dd.activation_time, dhi.device_type, dhi.device_category, dhi.marketing_name, UPPER(dd.mac_address) AS mac_address, UPPER(md.mac_id) AS mac_id, UPPER(md.serial_number) AS serial_number, UPPER(md.serial_number) AS serial_number_2, hdo.household_id, dwu.email, hdo.device_order, hdo.ownership_time, dds.location_id, dc.iso_code, dc.country
 FROM        bi_edw_prod.dim_device dd
 LEFT JOIN   bi_edw_prod.device_hierarchy dhi ON dd.device_type = dhi.device_type
-LEFT JOIN   (SELECT DISTINCT mac_id, serial_number FROM bi_raw_prod.manufactured_devices) md ON LOWER(dd.mac_address) = LOWER(md.mac_id)
+LEFT JOIN   (SELECT DISTINCT mac_id, serial_number FROM bi_raw_prod.manufactured_devices) md ON UPPER(dd.mac_address) = UPPER(md.mac_id)
 LEFT JOIN   bi_edw_prod.dim_household_device_order hdo ON dd.id = hdo.device_id
 LEFT JOIN   (
 SELECT MAX(operating_day) AS max_operating_day, household_id, device_id
@@ -89,9 +78,10 @@ LEFT JOIN   bi_edw_prod.dim_country dc ON l.country = dc.iso_code
 LEFT JOIN   bi_edw_prod.dim_household_scrubbed dh ON hdo.household_id = dh.id
 LEFT JOIN   bi_raw_prod.doorbot_web_users dwu ON dh.doorbot_web_user_id = dwu.id
 WHERE       1=1
-AND         hdo.ownership_time >= '2019-11-27'
+AND         hdo.ownership_time >= '", start_order_date, "'
+AND         md.mac_id IS NOT NULL
 ORDER BY    hdo.household_id, hdo.ownership_time
-"
+", sep = "")
 
 start_time_test = Sys.time()
 activation_data = dbGetQuery(pconn_rsql,q2)
@@ -100,16 +90,73 @@ print(end_time_test - start_time_test)
 
 nrow(activation_data)
 
+
+
 ncol(email_ship_data)
 
 by_mac_id[12:ncol(email_ship_data)]
 
-by_mac_id <- left_join(email_ship_data[0:20,],activation_data, by = "mac_id")
+by_mac_id <- left_join(email_ship_data[0:20,],activation_data, by = "mac_id") %>%
+  select(c((ncol(email_ship_data)+1):(ncol(email_ship_data)+ncol(activation_data)-1))) %>%
+  filter(device_order >= 1)
+
+by_serial_number <- left_join(email_ship_data[0:20,],activation_data, by = c(x.mac_id =  y.serial_number)) %>%
+  select(c((ncol(email_ship_data)+1):(ncol(email_ship_data)+ncol(activation_data)-1))) %>%
+  filter(device_order >= 1)
+
+#Activation table
+activations <- union_all(
+                          (
+                            #join on mac_id
+                            left_join(email_ship_data,activation_data, by = "mac_id") %>%
+                            select(c((ncol(email_ship_data)+1):(ncol(email_ship_data)+ncol(activation_data)-1))) %>%
+                            filter(device_order >= 1)
+                          )
+                          ,
+                          (
+                            #join on serial_number
+                            left_join(email_ship_data,activation_data, by = c("mac_id" =  "serial_number")) %>%
+                            select(c((ncol(email_ship_data)+1):(ncol(email_ship_data)+ncol(activation_data)-1))) %>%
+                            filter(device_order >= 1)
+                          )
+                        ) #%>%
+  select(c(1:ncol()))
   
-by_serial_number <- left_join(email_ship_data[0:20,],activation_data, by = c("mac_id" =  "serial_number"))
+
+
+View(activations)
+
+final_df <- left_join(email_ship_data)
   
+nrow(activations) 
+
+nrow(email_ship_data)
+
+154/366
+
 test2 <- 
 
 ?left_join()
 
 test2
+
+nrow(email_ship_data)
+
+
+A = left_join(email_ship_data,activation_data, by = "mac_id") %>%
+  #select(c((ncol(email_ship_data)+1):(ncol(email_ship_data)+ncol(activation_data)-1))) %>%
+  filter(device_order >= 1)
+
+View(A)
+
+
+
+#Saving output
+save_loc = paste('C:/Users/kuijt/Documents/R/Email to Activation Flow/',paste(substr(Sys.Date(),3,4),substr(Sys.Date(),6,7),substr(Sys.Date(),9,10),sep=""),'_BF_Email_Shipment_Data.xlsx', sep="")
+write.xlsx(email_ship_data, save_loc, row.names = FALSE)
+
+#Automatically adjusting column widths
+wb <- loadWorkbook(save_loc)
+sheets <- getSheets(wb)
+autoSizeColumn(sheets[[1]], colIndex=1:ncol(email_ship_data))
+saveWorkbook(wb,save_loc)
